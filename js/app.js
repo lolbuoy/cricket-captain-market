@@ -585,11 +585,9 @@ class App {
     this.liveData = parsed;
     this.isLiveMode = true;
 
-    // Render/update the live overlay (respects dismiss flag)
-    this.renderLiveOverlay(parsed, raw);
-
-    // If game engine is active, always sync the main scoreboard
+    // If game engine is active, sync the main scoreboard (no overlay needed)
     if (this.engine) {
+      this.hideLiveOverlay(); // Remove overlay once game is running
       this._syncScoreboardFromLive(parsed);
       this.updateAllUI();
 
@@ -597,6 +595,9 @@ class App {
       if (this.market && this.gamePhase === 'playing') {
         this.market.updateOdds(this.engine.getMatchState());
       }
+    } else {
+      // Only show the floating overlay on the start screen (before game starts)
+      this.renderLiveOverlay(parsed, raw);
     }
 
     // Update live badge wherever it may be
