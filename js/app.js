@@ -6,6 +6,7 @@ class App {
   constructor() {
     this.ui = new GameUI();
     this.api = new CricketAPI();
+    this.scraper = new CricbuzzScraper();
     this.engine = null;
     this.market = null;
     this.captain = null;
@@ -19,6 +20,7 @@ class App {
     this.isLiveMode = false;
     this.liveData = null;       // Latest parsed API data
     this.liveMatchInfo = null;  // Match metadata from API
+    this.liveSource = null;     // 'scraper' or 'api'
     this._liveListenersAttached = false;
 
     this.init();
@@ -27,17 +29,34 @@ class App {
   async init() {
     document.getElementById('app').innerHTML = this.ui.renderStartScreen();
 
-    // If API key exists, try connecting on page load
-    if (this.api.hasApiKey()) {
-      this._attachLiveListeners();
+    // Try scraper first (no API key needed!), then fall back to CricketData API
+    this._attachLiveListeners();
+
+    const scraperAvailable = await this.scraper.isAvailable();
+    if (scraperAvailable) {
+      console.log('🕷️ Scraper proxy detected — using Cricbuzz (no API key needed)');
+      this.liveSource = 'scraper';
       await this.tryLiveConnect();
+    } else if (this.api.hasApiKey()) {
+      console.log('🔑 Using CricketData.org API');
+      this.liveSource = 'api';
+      await this.tryLiveConnect();
+    } else {
+      console.log('📡 No live data source. Use simulation mode or run: node server.js');
     }
   }
 
   _attachLiveListeners() {
     if (this._liveListenersAttached) return;
+
+    // Scraper listeners
+    this.scraper.on('liveUpdate', (data) => this.onLiveUpdate(data));
+    this.scraper.on('liveStatus', (status) => this.onLiveStatus(status));
+
+    // API listeners
     this.api.on('liveUpdate', (data) => this.onLiveUpdate(data));
     this.api.on('liveStatus', (status) => this.onLiveStatus(status));
+
     this._liveListenersAttached = true;
   }
 
@@ -130,7 +149,7 @@ class App {
   }
 
   // ── Match Start ──
-  startMatch() {
+  async startMatch() {
     const bowlingFirst = this.firstBattingTeam === this.userTeam ? this.opponentTeam : this.userTeam;
 
     // Initialize engine
@@ -169,7 +188,12 @@ class App {
     this.updateAllUI();
 
     // Auto-connect to live API if key exists and not already connected
-    if (this.api.hasApiKey() && !this.api.isLive) {
+    if (this.isLiveMode && this.liveSource === 'scraper' && !this.scraper.isConnected) {
+      const match = await this.scraper.findMatch();
+      if (match) {
+        this.scraper.startPolling(match.id || match.matchId, 15000);
+      }
+    } else if (this.api.hasApiKey() && !this.api.isLive) {
       this.tryLiveConnect();
     }
 
@@ -422,50 +446,94 @@ class App {
     const key = input ? input.value.trim() : '';
     this.api.setApiKey(key);
     this.hideApiModal();
-    this.ui.showToast(key ? 'API key saved! Connecting...' : 'API key cleared. Using simulation mode.', key ? 'success' : 'info');
+    this.ui.showToast(key ? 'API key saved! Connecting...' : 'API key cleared.', key ? 'success' : 'info');
 
     // Stop any existing polling
     this.api.stopPolling();
+    this.scraper.stopPolling();
 
     if (key) {
+      this.liveSource = 'api';
       this._attachLiveListeners();
       this.tryLiveConnect();
     } else {
-      this.isLiveMode = false;
-      this.liveData = null;
-      this.hideLiveOverlay();
+      // If scraper is available, switch back to it
+      this.scraper.isAvailable().then(ok => {
+        if (ok) {
+          this.liveSource = 'scraper';
+          this.tryLiveConnect();
+        } else {
+          this.isLiveMode = false;
+          this.liveData = null;
+          this.hideLiveOverlay();
+        }
+      });
     }
   }
 
   async tryLiveConnect() {
-    if (!this.api.hasApiKey()) return;
+    if (!this.liveSource) return;
 
     this._attachLiveListeners();
     this.ui.showToast('🔍 Searching for live match...', 'info');
 
-    const match = await this.api.findLiveMatch();
-    if (match) {
-      this.liveMatchInfo = match;
-      this.isLiveMode = true;
+    let match = null;
 
-      this.ui.showToast(`📡 Connected: ${match.name || 'Live match found'}`, 'success', 4000);
+    if (this.liveSource === 'scraper') {
+      // Use Cricbuzz scraper (no API key!)
+      match = await this.scraper.findMatch();
+      if (match) {
+        this.liveMatchInfo = match;
+        this.isLiveMode = true;
+        this.liveData = this.scraper.normalize(match);
 
-      const liveBadge = document.getElementById('live-badge');
-      if (liveBadge) {
-        liveBadge.style.display = 'flex';
-        liveBadge.classList.add('live');
+        this.ui.showToast(`🕷️ Scraping live: ${match.name || 'Live match found'}`, 'success', 4000);
+
+        const liveBadge = document.getElementById('live-badge');
+        if (liveBadge) {
+          liveBadge.style.display = 'flex';
+          liveBadge.classList.add('live');
+        }
+
+        if (this.gamePhase === 'start') {
+          this._updateStartScreenForLive(match);
+        }
+
+        this.scraper.startPolling(match.id || match.matchId, 15000);
+        return;
+      }
+    }
+
+    if (this.liveSource === 'api' || !match) {
+      // Fallback: CricketData.org API
+      if (!this.api.hasApiKey()) {
+        this.ui.showToast('No live data source available. Using simulation mode.', 'warning');
+        return;
       }
 
-      // Update start screen if we're still there
-      if (this.gamePhase === 'start') {
-        this._updateStartScreenForLive(match);
-      }
+      match = await this.api.findLiveMatch();
+      if (match) {
+        this.liveMatchInfo = match;
+        this.isLiveMode = true;
+        this.liveSource = 'api';
 
-      // Start polling (does an immediate first fetch)
-      await this.api.startPolling(match.id, 20000);
-    } else {
-      this.isLiveMode = false;
-      this.ui.showToast('No live match found. Playing in simulation mode.', 'warning');
+        this.ui.showToast(`📡 Connected: ${match.name || 'Live match found'}`, 'success', 4000);
+
+        const liveBadge = document.getElementById('live-badge');
+        if (liveBadge) {
+          liveBadge.style.display = 'flex';
+          liveBadge.classList.add('live');
+        }
+
+        if (this.gamePhase === 'start') {
+          this._updateStartScreenForLive(match);
+        }
+
+        await this.api.startPolling(match.id, 20000);
+      } else {
+        this.isLiveMode = false;
+        this.ui.showToast('No live match found. Playing in simulation mode.', 'warning');
+      }
     }
   }
 
