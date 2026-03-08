@@ -15,18 +15,94 @@ class App {
     this.firstBattingTeam = null;
     this.gamePhase = 'start'; // start, toss, playing, inningsBreak, matchEnd
 
+    // Live mode state
+    this.isLiveMode = false;
+    this.liveData = null;       // Latest parsed API data
+    this.liveMatchInfo = null;  // Match metadata from API
+    this._liveListenersAttached = false;
+
     this.init();
   }
 
-  init() {
+  async init() {
     document.getElementById('app').innerHTML = this.ui.renderStartScreen();
+
+    // If API key exists, try connecting on page load
+    if (this.api.hasApiKey()) {
+      this._attachLiveListeners();
+      await this.tryLiveConnect();
+    }
+  }
+
+  _attachLiveListeners() {
+    if (this._liveListenersAttached) return;
+    this.api.on('liveUpdate', (data) => this.onLiveUpdate(data));
+    this.api.on('liveStatus', (status) => this.onLiveStatus(status));
+    this._liveListenersAttached = true;
   }
 
   // ── Toss Flow ──
   startToss() {
-    document.getElementById('start-screen').remove();
+    const startScreen = document.getElementById('start-screen');
+    if (startScreen) startScreen.remove();
+
+    // If live mode with a detected match, skip the toss
+    if (this.isLiveMode && this.liveData) {
+      this._autoStartFromLive();
+      return;
+    }
+
     document.getElementById('app').innerHTML = this.ui.renderTossScreen();
     this.gamePhase = 'toss';
+  }
+
+  _autoStartFromLive() {
+    // Detect who's batting from the API score data
+    const parsed = this.liveData;
+    const scores = parsed.scores || [];
+
+    // Try to figure out which team batted first from inning names
+    let detectedBatFirst = null;
+    let detectedBowlFirst = null;
+
+    if (scores.length > 0) {
+      const firstInning = (scores[0].inning || '').toLowerCase();
+      if (firstInning.includes('india') || firstInning.includes('ind')) {
+        detectedBatFirst = 'india';
+        detectedBowlFirst = 'newZealand';
+      } else if (firstInning.includes('new zealand') || firstInning.includes('nz') || firstInning.includes('zealand')) {
+        detectedBatFirst = 'newZealand';
+        detectedBowlFirst = 'india';
+      }
+    }
+
+    // Fallback: check team names array
+    if (!detectedBatFirst && parsed.teams && parsed.teams.length >= 2) {
+      const t0 = parsed.teams[0].toLowerCase();
+      if (t0.includes('india') || t0.includes('ind')) {
+        detectedBatFirst = 'india';
+        detectedBowlFirst = 'newZealand';
+      } else {
+        detectedBatFirst = 'newZealand';
+        detectedBowlFirst = 'india';
+      }
+    }
+
+    // Final fallback
+    if (!detectedBatFirst) {
+      detectedBatFirst = 'india';
+      detectedBowlFirst = 'newZealand';
+    }
+
+    this.firstBattingTeam = detectedBatFirst;
+    this.userTeam = detectedBowlFirst; // User captains the bowling side
+    this.opponentTeam = detectedBatFirst;
+
+    const batName = TEAMS[detectedBatFirst].name;
+    const bowlName = TEAMS[detectedBowlFirst].name;
+    this.ui.showToast(`📡 LIVE: ${batName} batted first. You captain ${bowlName}!`, 'success', 5000);
+
+    this.startMatch();
   }
 
   selectTossTeam(teamKey) {
@@ -47,7 +123,6 @@ class App {
     }
 
     const userTeamName = TEAMS[this.userTeam].name;
-    const batFirstName = TEAMS[this.firstBattingTeam].name;
     this.ui.showToast(`${userTeamName} won the toss and chose to ${choice} first!`, 'success');
 
     // Remove toss screen and start match
@@ -63,15 +138,14 @@ class App {
     this.market = new PredictionMarket();
     this.captain = new CaptainMode(this.engine, this.market);
 
-    // Set up event listeners
+    // Set up engine event listeners
     this.engine.on('ball', (event) => this.onBall(event));
     this.engine.on('overEnd', (summary) => this.onOverEnd(summary));
     this.engine.on('inningsEnd', (data) => this.onInningsEnd(data));
     this.engine.on('matchEnd', (result) => this.onMatchEnd(result));
 
     // Set up LIVE API event listeners
-    this.api.on('liveUpdate', (data) => this.onLiveUpdate(data));
-    this.api.on('liveStatus', (status) => this.onLiveStatus(status));
+    this._attachLiveListeners();
 
     // Initialize markets
     this.market.initializeMatchMarkets(this.firstBattingTeam, bowlingFirst);
@@ -86,16 +160,82 @@ class App {
     // Create first over markets
     this.market.createOverMarkets(0, this.engine.getMatchState());
 
+    // If live mode, sync scoreboard with API data immediately
+    if (this.isLiveMode && this.liveData) {
+      this._syncScoreboardFromLive(this.liveData);
+    }
+
     // Initial render
     this.updateAllUI();
 
-    // Auto-connect to live API if key exists
-    if (this.api.hasApiKey()) {
+    // Auto-connect to live API if key exists and not already connected
+    if (this.api.hasApiKey() && !this.api.isLive) {
       this.tryLiveConnect();
     }
 
     // Check if user is bowling team — they make captain decisions
     this.ui.showToast(`${TEAMS[this.firstBattingTeam].name} batting first. Select your bowler!`, 'info');
+  }
+
+  // Sync engine state from live API data
+  _syncScoreboardFromLive(parsed) {
+    if (!parsed || !parsed.scores || parsed.scores.length === 0) return;
+    if (!this.engine) return;
+
+    const latestScore = parsed.scores[parsed.scores.length - 1];
+
+    // Sync engine state from live data
+    this.engine.runs = latestScore.runs;
+    this.engine.wickets = latestScore.wickets;
+
+    // Parse overs (e.g. "14.3" → over 14, ball 3)
+    const oversFloat = parseFloat(latestScore.overs);
+    if (!isNaN(oversFloat)) {
+      this.engine.currentOver = Math.floor(oversFloat);
+      this.engine.currentBall = Math.round((oversFloat % 1) * 10);
+      this.engine.totalBalls = this.engine.currentOver * 6 + this.engine.currentBall;
+    }
+
+    // If 2nd innings exists, set up target
+    if (parsed.scores.length >= 2 && this.engine.innings === 1) {
+      const firstScore = parsed.scores[0];
+      this.engine.firstInningsScore = {
+        runs: firstScore.runs,
+        wickets: firstScore.wickets,
+        overs: String(firstScore.overs),
+        battingTeam: this.firstBattingTeam,
+      };
+      this.engine.innings = 2;
+      this.engine.target = firstScore.runs + 1;
+
+      // Swap batting/bowling if needed for 2nd innings
+      const secondInning = (parsed.scores[1].inning || '').toLowerCase();
+      if ((secondInning.includes('india') && this.engine.battingTeamKey !== 'india') ||
+          (secondInning.includes('new zealand') && this.engine.battingTeamKey !== 'newZealand')) {
+        // Need to swap
+        const temp = this.engine.battingTeamKey;
+        this.engine.battingTeamKey = this.engine.bowlingTeamKey;
+        this.engine.bowlingTeamKey = temp;
+        this.engine.battingTeam = TEAMS[this.engine.battingTeamKey];
+        this.engine.bowlingTeam = TEAMS[this.engine.bowlingTeamKey];
+      }
+
+      // Update 2nd innings score
+      this.engine.runs = parsed.scores[1].runs;
+      this.engine.wickets = parsed.scores[1].wickets;
+      const ov2 = parseFloat(parsed.scores[1].overs);
+      if (!isNaN(ov2)) {
+        this.engine.currentOver = Math.floor(ov2);
+        this.engine.currentBall = Math.round((ov2 % 1) * 10);
+        this.engine.totalBalls = this.engine.currentOver * 6 + this.engine.currentBall;
+      }
+    }
+
+    // Update innings badge
+    const badge = document.getElementById('innings-badge');
+    if (badge) {
+      badge.querySelector('span').textContent = this.engine.innings === 1 ? '1st Innings' : '2nd Innings';
+    }
   }
 
   // ── Captain Actions ──
@@ -188,7 +328,6 @@ class App {
   onOverEnd(summary) {
     // Resolve over markets
     const state = this.engine.getMatchState();
-    // We need the overRuns/overWickets from the summary, before they were reset
     const overState = {
       ...state,
       overRuns: summary.runs,
@@ -219,9 +358,7 @@ class App {
   }
 
   onInningsEnd(data) {
-    // Resolve innings markets
     this.market.resolveInningsMarkets(data);
-
     this.gamePhase = 'inningsBreak';
     this.ui.showInningsBreak(data);
   }
@@ -229,11 +366,8 @@ class App {
   startSecondInnings() {
     this.ui.hideInningsBreak();
     this.engine.startSecondInnings();
-
-    // Create new over markets for second innings
     this.market.createOverMarkets(0, this.engine.getMatchState());
 
-    // Update innings badge
     const badge = document.getElementById('innings-badge');
     if (badge) {
       badge.querySelector('span').textContent = '2nd Innings';
@@ -245,15 +379,11 @@ class App {
       'info',
       4000
     );
-
     this.updateAllUI();
   }
 
   onMatchEnd(result) {
-    // Resolve all remaining markets
     this.market.resolveMatchMarkets(result, this.firstBattingTeam);
-
-    // Resolve any remaining open markets as cancelled (resolve with current outcome)
     this.market.getOpenMarkets().forEach(m => {
       this.market.resolveMarket(m.id, 'no');
     });
@@ -261,7 +391,6 @@ class App {
     const summary = this.market.getPortfolioSummary();
     this.gamePhase = 'matchEnd';
 
-    // Small delay for dramatic effect
     setTimeout(() => {
       this.ui.showMatchResult(result, summary);
     }, 1500);
@@ -298,11 +427,12 @@ class App {
     // Stop any existing polling
     this.api.stopPolling();
 
-    // Try connecting regardless of game phase
     if (key) {
+      this._attachLiveListeners();
       this.tryLiveConnect();
     } else {
-      // Remove live overlay if exists
+      this.isLiveMode = false;
+      this.liveData = null;
       this.hideLiveOverlay();
     }
   }
@@ -310,27 +440,44 @@ class App {
   async tryLiveConnect() {
     if (!this.api.hasApiKey()) return;
 
-    // Set up listeners if not already (for when called before startMatch)
-    if (!this._liveListenersAttached) {
-      this.api.on('liveUpdate', (data) => this.onLiveUpdate(data));
-      this.api.on('liveStatus', (status) => this.onLiveStatus(status));
-      this._liveListenersAttached = true;
-    }
-
-    const liveBadge = document.getElementById('live-badge');
+    this._attachLiveListeners();
     this.ui.showToast('🔍 Searching for live match...', 'info');
 
     const match = await this.api.findLiveMatch();
     if (match) {
+      this.liveMatchInfo = match;
+      this.isLiveMode = true;
+
       this.ui.showToast(`📡 Connected: ${match.name || 'Live match found'}`, 'success', 4000);
+
+      const liveBadge = document.getElementById('live-badge');
       if (liveBadge) {
         liveBadge.style.display = 'flex';
         liveBadge.classList.add('live');
       }
+
+      // Update start screen if we're still there
+      if (this.gamePhase === 'start') {
+        this._updateStartScreenForLive(match);
+      }
+
       // Start polling (does an immediate first fetch)
       await this.api.startPolling(match.id, 20000);
     } else {
+      this.isLiveMode = false;
       this.ui.showToast('No live match found. Playing in simulation mode.', 'warning');
+    }
+  }
+
+  _updateStartScreenForLive(match) {
+    const startBtn = document.getElementById('btn-start-match');
+    if (startBtn) {
+      startBtn.textContent = '📡 JOIN LIVE MATCH';
+      startBtn.style.background = 'linear-gradient(135deg, #ff3b5c 0%, #ff8c00 100%)';
+    }
+    const metaEl = document.querySelector('.start-match-meta');
+    if (metaEl) {
+      metaEl.innerHTML = `<span style="color:#ff3b5c; font-weight:700;">● LIVE NOW</span> — ${match.name || 'ICC T20 WC 2026 Final'}`;
     }
   }
 
@@ -341,24 +488,30 @@ class App {
 
     console.log('📡 Live update received:', parsed);
 
-    // Show/update the live score overlay
+    // Store latest live data
+    this.liveData = parsed;
+    this.isLiveMode = true;
+
+    // Render/update the live overlay always
     this.renderLiveOverlay(parsed, raw);
 
-    // Update live badge
+    // If game engine is active, sync the main scoreboard
+    if (this.engine && this.gamePhase === 'playing') {
+      this._syncScoreboardFromLive(parsed);
+      this.updateAllUI();
+
+      // Also update market odds based on fresh live data
+      if (this.market) {
+        this.market.updateOdds(this.engine.getMatchState());
+      }
+    }
+
+    // Update live badge wherever it may be
     const liveBadge = document.getElementById('live-badge');
     if (liveBadge) {
       liveBadge.style.display = 'flex';
       liveBadge.classList.add('live');
       liveBadge.querySelector('span').textContent = 'LIVE';
-    }
-
-    // If the game engine is active, update market odds based on live data
-    if (this.market && parsed.scores && parsed.scores.length > 0) {
-      const latestScore = parsed.scores[parsed.scores.length - 1];
-      // Update match winner odds based on live score
-      this.market.updateOdds(this.engine.getMatchState());
-      this.ui.renderMarkets(this.market);
-      this.ui.renderPortfolio(this.market);
     }
   }
 
@@ -402,7 +555,6 @@ class App {
       </div>
     `).join('');
 
-    // Batting details if available
     let battingHtml = '';
     if (parsed.batting && parsed.batting.length > 0) {
       const activeBatters = parsed.batting.filter(b => !b.dismissal || b.dismissal === 'not out' || b.dismissal === 'batting');
