@@ -22,6 +22,7 @@ class App {
     this.liveMatchInfo = null;  // Match metadata from API
     this.liveSource = null;     // 'scraper' or 'api'
     this._liveListenersAttached = false;
+    this._liveOverlayDismissed = false; // Track if user closed the overlay
 
     this.init();
   }
@@ -206,37 +207,54 @@ class App {
     if (!parsed || !parsed.scores || parsed.scores.length === 0) return;
     if (!this.engine) return;
 
-    const latestScore = parsed.scores[parsed.scores.length - 1];
+    // Determine which score is 1st innings and which is 2nd
+    // Cricbuzz og:description may list current batting team first
+    let firstInningsScore = null;
+    let currentInningsScore = null;
 
-    // Sync engine state from live data
-    this.engine.runs = latestScore.runs;
-    this.engine.wickets = latestScore.wickets;
+    if (parsed.scores.length === 1) {
+      // Only one innings — this is the current (1st) innings
+      currentInningsScore = parsed.scores[0];
+    } else if (parsed.scores.length >= 2) {
+      // Two innings — figure out which is first by matching the firstBattingTeam
+      const s0Inning = (parsed.scores[0].inning || '').toLowerCase();
+      const s1Inning = (parsed.scores[1].inning || '').toLowerCase();
+      const firstBatKey = this.firstBattingTeam || '';
+      const firstBatName = TEAMS[firstBatKey]?.name?.toLowerCase() || '';
+      const firstBatShort = TEAMS[firstBatKey]?.shortName?.toLowerCase() || '';
 
-    // Parse overs (e.g. "14.3" → over 14, ball 3)
-    const oversFloat = parseFloat(latestScore.overs);
-    if (!isNaN(oversFloat)) {
-      this.engine.currentOver = Math.floor(oversFloat);
-      this.engine.currentBall = Math.round((oversFloat % 1) * 10);
-      this.engine.totalBalls = this.engine.currentOver * 6 + this.engine.currentBall;
+      if (s0Inning.includes(firstBatName) || s0Inning.includes(firstBatShort)) {
+        firstInningsScore = parsed.scores[0];
+        currentInningsScore = parsed.scores[1];
+      } else if (s1Inning.includes(firstBatName) || s1Inning.includes(firstBatShort)) {
+        firstInningsScore = parsed.scores[1];
+        currentInningsScore = parsed.scores[0];
+      } else {
+        // Fallback: assume first entry = first innings
+        firstInningsScore = parsed.scores[0];
+        currentInningsScore = parsed.scores[1];
+      }
     }
 
-    // If 2nd innings exists, set up target
-    if (parsed.scores.length >= 2 && this.engine.innings === 1) {
-      const firstScore = parsed.scores[0];
-      this.engine.firstInningsScore = {
-        runs: firstScore.runs,
-        wickets: firstScore.wickets,
-        overs: String(firstScore.overs),
-        battingTeam: this.firstBattingTeam,
-      };
-      this.engine.innings = 2;
-      this.engine.target = firstScore.runs + 1;
+    // Single innings — sync directly
+    if (parsed.scores.length === 1) {
+      this._applyScoreToEngine(currentInningsScore);
+    }
 
-      // Swap batting/bowling if needed for 2nd innings
-      const secondInning = (parsed.scores[1].inning || '').toLowerCase();
-      if ((secondInning.includes('india') && this.engine.battingTeamKey !== 'india') ||
-          (secondInning.includes('new zealand') && this.engine.battingTeamKey !== 'newZealand')) {
-        // Need to swap
+    // Two innings — set up first innings result and sync current
+    if (parsed.scores.length >= 2 && firstInningsScore) {
+      // Store first innings result if not already done
+      if (this.engine.innings === 1) {
+        this.engine.firstInningsScore = {
+          runs: firstInningsScore.runs,
+          wickets: firstInningsScore.wickets,
+          overs: String(firstInningsScore.overs),
+          battingTeam: this.firstBattingTeam,
+        };
+        this.engine.innings = 2;
+        this.engine.target = firstInningsScore.runs + 1;
+
+        // Swap batting/bowling for 2nd innings
         const temp = this.engine.battingTeamKey;
         this.engine.battingTeamKey = this.engine.bowlingTeamKey;
         this.engine.bowlingTeamKey = temp;
@@ -244,21 +262,28 @@ class App {
         this.engine.bowlingTeam = TEAMS[this.engine.bowlingTeamKey];
       }
 
-      // Update 2nd innings score
-      this.engine.runs = parsed.scores[1].runs;
-      this.engine.wickets = parsed.scores[1].wickets;
-      const ov2 = parseFloat(parsed.scores[1].overs);
-      if (!isNaN(ov2)) {
-        this.engine.currentOver = Math.floor(ov2);
-        this.engine.currentBall = Math.round((ov2 % 1) * 10);
-        this.engine.totalBalls = this.engine.currentOver * 6 + this.engine.currentBall;
-      }
+      // Always update the current (2nd) innings score
+      this._applyScoreToEngine(currentInningsScore);
     }
 
     // Update innings badge
     const badge = document.getElementById('innings-badge');
     if (badge) {
       badge.querySelector('span').textContent = this.engine.innings === 1 ? '1st Innings' : '2nd Innings';
+    }
+  }
+
+  // Apply a score entry to the engine state
+  _applyScoreToEngine(score) {
+    if (!score || !this.engine) return;
+    this.engine.runs = score.runs;
+    this.engine.wickets = score.wickets;
+
+    const oversFloat = parseFloat(score.overs);
+    if (!isNaN(oversFloat)) {
+      this.engine.currentOver = Math.floor(oversFloat);
+      this.engine.currentBall = Math.round((oversFloat % 1) * 10);
+      this.engine.totalBalls = this.engine.currentOver * 6 + this.engine.currentBall;
     }
   }
 
@@ -560,16 +585,16 @@ class App {
     this.liveData = parsed;
     this.isLiveMode = true;
 
-    // Render/update the live overlay always
+    // Render/update the live overlay (respects dismiss flag)
     this.renderLiveOverlay(parsed, raw);
 
-    // If game engine is active, sync the main scoreboard
-    if (this.engine && this.gamePhase === 'playing') {
+    // If game engine is active, always sync the main scoreboard
+    if (this.engine) {
       this._syncScoreboardFromLive(parsed);
       this.updateAllUI();
 
       // Also update market odds based on fresh live data
-      if (this.market) {
+      if (this.market && this.gamePhase === 'playing') {
         this.market.updateOdds(this.engine.getMatchState());
       }
     }
@@ -596,6 +621,9 @@ class App {
   }
 
   renderLiveOverlay(parsed, raw) {
+    // Don't recreate the overlay if the user dismissed it
+    if (this._liveOverlayDismissed) return;
+
     let overlay = document.getElementById('live-score-overlay');
     if (!overlay) {
       overlay = document.createElement('div');
@@ -656,6 +684,7 @@ class App {
   }
 
   hideLiveOverlay() {
+    this._liveOverlayDismissed = true;
     const overlay = document.getElementById('live-score-overlay');
     if (overlay) overlay.remove();
   }
