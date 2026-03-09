@@ -1,138 +1,98 @@
 // ============================================
-// scraper.js — Cricbuzz Web Scraper Client
-// Uses the local proxy server at /api/scrape/*
-// No API key needed!
+// scraper.js — Client-side Cricbuzz data layer
+// Fetches from /api/scrape/* endpoints
+// Single source of truth for match state
 // ============================================
 
 class CricbuzzScraper {
   constructor() {
-    this.baseUrl = '/api/scrape';
+    this.matchData = null;
+    this.matchId = null;
+    this.pollTimer = null;
     this.isConnected = false;
-    this.currentMatchId = null;
-    this.pollingInterval = null;
     this.listeners = {};
   }
 
-  on(event, callback) {
+  on(event, cb) {
     if (!this.listeners[event]) this.listeners[event] = [];
-    this.listeners[event].push(callback);
+    this.listeners[event].push(cb);
   }
 
   emit(event, data) {
     (this.listeners[event] || []).forEach(cb => cb(data));
   }
 
-  // Check if the scraper proxy is available
+  // Check if proxy server (local) or Vercel API is available
   async isAvailable() {
     try {
-      const res = await fetch(`${this.baseUrl}/live`, { signal: AbortSignal.timeout(5000) });
-      const data = await res.json();
-      return data.status === 'success';
-    } catch {
-      return false;
-    }
+      const r = await fetch('/api/scrape/live', { signal: AbortSignal.timeout(3000) });
+      return r.ok;
+    } catch { return false; }
   }
 
-  // Find the India vs NZ match (or any live match)
+  // Find a match (IND vs NZ first, then any live match)
   async findMatch() {
     try {
-      const res = await fetch(`${this.baseUrl}/find`);
-      const data = await res.json();
-
-      if (data.status === 'success' && data.data) {
-        this.currentMatchId = data.match.id;
-        return {
-          id: data.match.id,
-          slug: data.match.slug,
-          ...data.data,
-        };
+      const r = await fetch('/api/scrape/find');
+      const json = await r.json();
+      if (json.status === 'success' && json.data) {
+        this.matchData = json.data;
+        this.matchId = json.data.matchId;
+        return json.data;
       }
-      return null;
-    } catch (err) {
-      console.warn('Scraper findMatch failed:', err);
-      return null;
+    } catch (e) {
+      console.error('Scraper findMatch error:', e);
     }
+    return null;
   }
 
-  // Fetch score for a specific match
-  async fetchScore(matchId) {
+  // Fetch full data for a specific match
+  async fetchMatch(matchId) {
     try {
-      const res = await fetch(`${this.baseUrl}/match/${matchId}`);
-      const data = await res.json();
-      if (data.status === 'success' && data.data) {
-        return data.data;
+      const r = await fetch(`/api/scrape/match/${matchId}`);
+      const json = await r.json();
+      if (json.status === 'success' && json.data) {
+        this.matchData = json.data;
+        this.matchId = matchId;
+        return json.data;
       }
-      return null;
-    } catch (err) {
-      console.warn('Scraper fetchScore failed:', err);
-      return null;
+    } catch (e) {
+      console.error('Scraper fetchMatch error:', e);
     }
+    return null;
   }
 
   // Start polling for live updates
   startPolling(matchId, intervalMs = 15000) {
-    this.currentMatchId = matchId;
+    this.stopPolling();
     this.isConnected = true;
-    this.emit('liveStatus', { isLive: true, matchId, source: 'scraper' });
 
-    // Immediate first fetch
-    this._poll(matchId);
+    const poll = async () => {
+      const data = await this.fetchMatch(matchId);
+      if (data) {
+        this.emit('matchUpdate', data);
 
-    // Then poll
-    this.pollingInterval = setInterval(() => {
-      this._poll(matchId);
-    }, intervalMs);
-  }
+        // Stop polling if match is complete
+        if (data.matchStatus === 'complete') {
+          this.stopPolling();
+        }
+      }
+    };
 
-  async _poll(matchId) {
-    const data = await this.fetchScore(matchId);
-    if (data) {
-      const parsed = this.normalize(data);
-      this.emit('liveUpdate', { raw: data, parsed, source: 'scraper' });
-    }
+    poll(); // Immediate first fetch
+    this.pollTimer = setInterval(poll, intervalMs);
   }
 
   stopPolling() {
-    if (this.pollingInterval) {
-      clearInterval(this.pollingInterval);
-      this.pollingInterval = null;
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
     }
     this.isConnected = false;
-    this.emit('liveStatus', { isLive: false, source: 'scraper' });
   }
 
-  // Normalize scraped data to the same format as CricketAPI
-  normalize(data) {
-    return {
-      innings: (data.scores || []).length,
-      scores: (data.scores || []).map(s => ({
-        inning: s.inning || s.team || 'Innings',
-        runs: s.runs,
-        wickets: s.wickets,
-        overs: s.overs,
-      })),
-      batting: (data.batting || []).map(b => ({
-        name: b.name,
-        runs: b.runs || 0,
-        balls: b.balls || 0,
-        fours: b.fours || 0,
-        sixes: b.sixes || 0,
-        dismissal: b.dismissal || '',
-      })),
-      bowling: (data.bowling || []).map(b => ({
-        name: b.name,
-        overs: b.overs || 0,
-        runs: b.runs || 0,
-        wickets: b.wickets || 0,
-        economy: b.economy || 0,
-      })),
-      status: data.status || '',
-      name: data.name || '',
-      venue: data.venue || '',
-      matchStarted: true,
-      matchEnded: false,
-      teams: [],
-      recentBalls: data.recentBalls || '',
-    };
+  // Get current match state
+  getMatchData() {
+    return this.matchData;
   }
 }

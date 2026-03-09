@@ -1,4 +1,4 @@
-const { scrapeMatchScore } = require('../../_utils');
+const { scrapeFullMatch } = require('../../_utils');
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -10,7 +10,7 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const data = await scrapeMatchScore(id);
+    const data = await scrapeFullMatch(id);
     res.status(200).json({ status: data ? 'success' : 'error', data });
   } catch (err) {
     res.status(500).json({ status: 'error', error: err.message });

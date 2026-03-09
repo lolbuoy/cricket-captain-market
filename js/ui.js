@@ -4,32 +4,119 @@
 
 class GameUI {
   constructor() {
-    this.toastQueue = [];
     this.currentMarketTab = 'open';
   }
 
-  // ── Toast notifications ──
-  showToast(message, type = 'info', duration = 3000) {
-    const container = document.getElementById('toast-container');
-    const toast = document.createElement('div');
-    toast.className = `toast ${type}`;
-    const icons = { success: '✅', error: '❌', info: 'ℹ️', warning: '⚠️' };
-    toast.innerHTML = `<span>${icons[type] || ''}</span><span>${message}</span>`;
-    container.appendChild(toast);
-    setTimeout(() => {
-      toast.style.animation = 'slideOut 0.3s ease forwards';
-      setTimeout(() => toast.remove(), 300);
-    }, duration);
+  // ── Loading Screen ──
+  renderLoadingScreen() {
+    return `
+      <div class="start-screen" id="start-screen">
+        <div class="start-title">🏏 Cricket Captain<br>× Market</div>
+        <div class="start-subtitle" style="margin-top:16px; color:var(--text-muted);">
+          Loading match data...
+        </div>
+      </div>
+    `;
   }
 
-  // ── Start Screen ──
+  // ── COMPLETED MATCH VIEW ──
+  // Renders directly from scraped data (no engine needed)
+  renderCompletedMatch(data) {
+    const resultText = data.resultText || 'Match Complete';
+    const venue = data.venue || '';
+    const matchName = data.name || 'Cricket Match';
+    const mom = data.mom || '';
+    const innings = data.innings || [];
+
+    // Build innings scores
+    let inningsHtml = innings.map((inn, i) => `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0; ${i < innings.length - 1 ? 'border-bottom:1px solid rgba(255,255,255,0.06);' : ''}">
+        <span style="font-size:0.9rem; color:#e8eaf6; font-weight:500;">${inn.battingTeam}</span>
+        <span style="font-family:var(--font-mono); font-size:1.1rem; font-weight:700; color:#e8eaf6;">
+          ${inn.runs}/${inn.wickets}
+          <span style="font-size:0.8rem; color:#00d4ff;">(${inn.overs} ov)</span>
+        </span>
+      </div>
+    `).join('');
+
+    // Toss info
+    let tossHtml = '';
+    if (data.toss && data.toss.fullText) {
+      tossHtml = `<div style="font-size:0.75rem; color:var(--text-muted); margin-top:8px;">🪙 ${data.toss.fullText}</div>`;
+    }
+
+    // MoM
+    let momHtml = '';
+    if (mom) {
+      momHtml = `
+        <div style="margin-top:16px; padding:14px 24px; background:rgba(255,215,0,0.08); border:1px solid rgba(255,215,0,0.2); border-radius:14px; text-align:center;">
+          <div style="font-size:0.65rem; color:#ffd700; text-transform:uppercase; letter-spacing:2px;">🏆 Player of the Match</div>
+          <div style="font-size:1.15rem; font-weight:700; color:#e8eaf6; margin-top:4px;">${mom}</div>
+          ${data.momStats ? `<div style="font-size:0.82rem; color:#ffd700; font-family:var(--font-mono); margin-top:2px;">${data.momStats}</div>` : ''}
+        </div>
+      `;
+    }
+
+    return `
+      <div class="start-screen" id="results-screen" style="padding-bottom:40px;">
+        <div class="start-title" style="font-size:1.8rem;">🏏 ${matchName}</div>
+        <div style="font-size:0.78rem; color:var(--text-muted); margin-top:4px;">📍 ${venue}</div>
+        ${tossHtml}
+
+        <div style="margin-top:24px; padding:16px 24px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:14px; min-width:340px; max-width:500px;">
+          ${inningsHtml}
+        </div>
+
+        <div style="margin-top:16px; padding:12px 24px; background:linear-gradient(135deg, rgba(0,255,136,0.08), rgba(0,212,255,0.08)); border:1px solid rgba(0,255,136,0.2); border-radius:12px; text-align:center;">
+          <div style="font-size:1rem; font-weight:700; color:var(--accent-green);">${resultText}</div>
+        </div>
+
+        ${momHtml}
+
+        <div style="display:flex; gap:12px; margin-top:28px; flex-wrap:wrap; justify-content:center;">
+          <button class="btn-start" onclick="app.startToss()" style="font-size:0.85rem; padding:12px 28px;">
+            🎮 Play Simulation
+          </button>
+        </div>
+
+        <div style="font-size:0.68rem; color:var(--text-muted); margin-top:16px;">
+          Match is over. You can play a simulation to test captain decisions and prediction markets.
+        </div>
+      </div>
+    `;
+  }
+
+  // ── UPCOMING MATCH VIEW ──
+  renderUpcomingMatch(data) {
+    const matchName = data.name || 'Cricket Match';
+    const venue = data.venue || '';
+    let tossHtml = '';
+    if (data.toss && data.toss.fullText) {
+      tossHtml = `<div style="font-size:0.82rem; color:var(--text-secondary); margin-top:12px;">🪙 ${data.toss.fullText}</div>`;
+    }
+
+    return `
+      <div class="start-screen" id="start-screen">
+        <div class="start-title">🏏 ${matchName}</div>
+        <div style="font-size:0.78rem; color:var(--text-muted); margin-top:4px;">📍 ${venue}</div>
+        ${tossHtml}
+        <div style="margin-top:20px; font-size:0.85rem; color:var(--text-secondary);">
+          Match hasn't started yet. Check back later for live data.
+        </div>
+        <button class="btn-start" onclick="app.startToss()" style="margin-top:20px;">
+          🎮 Play Simulation
+        </button>
+      </div>
+    `;
+  }
+
+  // ── Start Screen (Simulation mode, no scraped data) ──
   renderStartScreen() {
     return `
       <div class="start-screen" id="start-screen">
         <div class="start-title">🏏 Cricket Captain<br>× Market</div>
         <div class="start-subtitle">
           Make tactical captain decisions and trade prediction markets ball-by-ball in real-time.
-          Can you outsmart the odds?
         </div>
         <div class="start-match-card">
           <div class="start-match-meta">ICC Men's T20 World Cup 2026 — FINAL</div>
@@ -49,9 +136,6 @@ class GameUI {
         <button class="btn-start" id="btn-start-match" onclick="app.startToss()">
           ⚡ START MATCH
         </button>
-        <div class="api-setup-link" onclick="app.showApiModal()">
-          🔗 Connect Live API (optional)
-        </div>
       </div>
     `;
   }

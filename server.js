@@ -83,7 +83,12 @@ async function routeAPI(pathname, req, res) {
   try {
     // Clear require cache for hot reload during dev
     const fullPath = path.resolve(__dirname, handlerPath);
-    delete require.cache[fullPath];
+    // Clear all api module caches
+    Object.keys(require.cache).forEach(key => {
+      if (key.includes(path.join(__dirname, 'api'))) {
+        delete require.cache[key];
+      }
+    });
     const handler = require(fullPath);
 
     // Create mock req/res objects compatible with Vercel
