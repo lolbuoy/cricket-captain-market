@@ -178,6 +178,19 @@ class GameUI {
       ? `<div class="target-info">Target: ${state.target} | Need ${state.target - state.runs} off ${(20*6) - state.totalBalls} balls</div>`
       : '';
 
+    // 1st innings summary bar (shown during 2nd innings)
+    let firstInningsSummary = '';
+    if (engine.innings === 2 && engine.scorecard[1]) {
+      const sc1 = engine.scorecard[1];
+      firstInningsSummary = `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 16px; background:rgba(255,255,255,0.04); border-radius:10px; margin-bottom:10px; border:1px solid rgba(255,255,255,0.06);">
+          <span style="font-size:0.75rem; color:var(--text-muted);">${sc1.battingTeamFlag || ''} ${sc1.battingTeamName || 'Team 1'} - 1st Innings</span>
+          <span style="font-family:var(--font-mono); font-size:0.85rem; font-weight:700; color:var(--text-secondary);">${sc1.runs}/${sc1.wickets} (${sc1.overs})</span>
+          <button onclick="app.showScorecard()" style="font-size:0.65rem; background:rgba(0,212,255,0.15); border:1px solid rgba(0,212,255,0.3); color:#00d4ff; padding:3px 10px; border-radius:6px; cursor:pointer;">Scorecard</button>
+        </div>
+      `;
+    }
+
     const ballsHtml = state.overBalls.map(b => {
       let cls = 'dot';
       if (b === 'W') cls = 'wicket';
@@ -195,6 +208,7 @@ class GameUI {
     if (!el) return;
 
     el.innerHTML = `
+      ${firstInningsSummary}
       <div class="score-main">
         <div class="team-display batting">
           <span class="team-flag">${bat.flag}</span>
@@ -222,7 +236,7 @@ class GameUI {
       </div>
       <div class="players-strip">
         <div class="player-stat">
-          <span class="p-name ${state.striker ? 'on-strike' : ''}">${state.striker?.shortName || '-'}</span>
+          <span class="p-name ${state.striker ? 'on-strike' : ''}">${state.striker?.shortName || '-'} *</span>
           <span class="p-score">${strikerStats.runs || 0}(${strikerStats.balls || 0}) ${strikerStats.fours ? `${strikerStats.fours}×4` : ''} ${strikerStats.sixes ? `${strikerStats.sixes}×6` : ''}</span>
         </div>
         <div class="player-stat">
@@ -502,18 +516,83 @@ class GameUI {
   }
 
   // ── Innings Break Overlay ──
-  showInningsBreak(firstInningsData) {
+  showInningsBreak(firstInningsData, engine) {
     const team = TEAMS[firstInningsData.battingTeam];
     const overlay = document.createElement('div');
     overlay.className = 'innings-break-overlay';
     overlay.id = 'innings-break';
+
+    // Build batting table
+    let batHtml = '';
+    if (firstInningsData.batting && firstInningsData.batting.length > 0) {
+      const rows = firstInningsData.batting.map(b => `
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
+          <td style="padding:5px 8px; font-size:0.78rem; color:#e8eaf6;">${b.name || b.shortName}</td>
+          <td style="padding:5px 8px; font-size:0.68rem; color:#8892b0;">${b.dismissal || 'not out'}</td>
+          <td style="padding:5px 4px; font-family:var(--font-mono); font-size:0.78rem; color:var(--accent-green); text-align:right;">${b.runs}</td>
+          <td style="padding:5px 4px; font-size:0.68rem; color:#8892b0; text-align:right;">${b.balls}</td>
+          <td style="padding:5px 4px; font-size:0.68rem; color:#8892b0; text-align:right;">${b.fours || 0}</td>
+          <td style="padding:5px 4px; font-size:0.68rem; color:#8892b0; text-align:right;">${b.sixes || 0}</td>
+          <td style="padding:5px 4px; font-size:0.68rem; color:#00d4ff; text-align:right;">${b.strikeRate || '-'}</td>
+        </tr>
+      `).join('');
+      batHtml = `
+        <table style="width:100%; border-collapse:collapse; margin-top:12px;">
+          <thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">
+            <th style="text-align:left; font-size:0.65rem; color:#4a5568; padding:4px 8px;">BATSMAN</th>
+            <th style="text-align:left; font-size:0.65rem; color:#4a5568; padding:4px 8px;"></th>
+            <th style="text-align:right; font-size:0.65rem; color:#4a5568; padding:4px 4px;">R</th>
+            <th style="text-align:right; font-size:0.65rem; color:#4a5568; padding:4px 4px;">B</th>
+            <th style="text-align:right; font-size:0.65rem; color:#4a5568; padding:4px 4px;">4s</th>
+            <th style="text-align:right; font-size:0.65rem; color:#4a5568; padding:4px 4px;">6s</th>
+            <th style="text-align:right; font-size:0.65rem; color:#4a5568; padding:4px 4px;">SR</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    // Build bowling table
+    let bowlHtml = '';
+    if (firstInningsData.bowling && firstInningsData.bowling.length > 0) {
+      const rows = firstInningsData.bowling.map(b => `
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
+          <td style="padding:5px 8px; font-size:0.78rem; color:#e8eaf6;">${b.name || b.shortName}</td>
+          <td style="padding:5px 4px; font-family:var(--font-mono); font-size:0.78rem; color:#8892b0; text-align:right;">${b.overs}</td>
+          <td style="padding:5px 4px; font-size:0.78rem; color:#8892b0; text-align:right;">${b.maidens}</td>
+          <td style="padding:5px 4px; font-size:0.78rem; color:var(--accent-red); text-align:right;">${b.runs}</td>
+          <td style="padding:5px 4px; font-size:0.78rem; color:var(--accent-green); text-align:right; font-weight:700;">${b.wickets}</td>
+          <td style="padding:5px 4px; font-size:0.78rem; color:#00d4ff; text-align:right;">${b.economy || '-'}</td>
+        </tr>
+      `).join('');
+      bowlHtml = `
+        <table style="width:100%; border-collapse:collapse; margin-top:12px;">
+          <thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">
+            <th style="text-align:left; font-size:0.65rem; color:#4a5568; padding:4px 8px;">BOWLER</th>
+            <th style="text-align:right; font-size:0.65rem; color:#4a5568; padding:4px 4px;">O</th>
+            <th style="text-align:right; font-size:0.65rem; color:#4a5568; padding:4px 4px;">M</th>
+            <th style="text-align:right; font-size:0.65rem; color:#4a5568; padding:4px 4px;">R</th>
+            <th style="text-align:right; font-size:0.65rem; color:#4a5568; padding:4px 4px;">W</th>
+            <th style="text-align:right; font-size:0.65rem; color:#4a5568; padding:4px 4px;">Econ</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    const chaseTeamName = engine ? TEAMS[engine.bowlingTeamKey].name : 'Team 2';
+
     overlay.innerHTML = `
       <h2>🏏 Innings Break</h2>
       <div style="font-size:1.1rem; color: var(--text-secondary);">${team.flag} ${team.name}</div>
       <div class="score-summary">${firstInningsData.runs}/${firstInningsData.wickets}</div>
       <div style="color: var(--text-secondary);">(${firstInningsData.overs} overs)</div>
+      <div style="max-height:300px; overflow-y:auto; width:100%; max-width:600px; margin-top:12px;">
+        ${batHtml}
+        ${bowlHtml}
+      </div>
       <button class="btn btn-primary" style="margin-top:20px; padding:14px 48px; font-size:1rem;" onclick="app.startSecondInnings()">
-        🏏 Start ${TEAMS[app.engine.bowlingTeamKey].name}'s Chase
+        🏏 Start ${chaseTeamName}'s Chase
       </button>
     `;
     document.body.appendChild(overlay);
@@ -525,7 +604,7 @@ class GameUI {
   }
 
   // ── Match Result Overlay ──
-  showMatchResult(result, portfolioSummary) {
+  showMatchResult(result, portfolioSummary, engine) {
     const overlay = document.createElement('div');
     overlay.className = 'match-result-overlay';
     overlay.id = 'match-result';
@@ -533,9 +612,44 @@ class GameUI {
     const winner = result.winner ? TEAMS[result.winner] : null;
     const pnlColor = portfolioSummary.totalPnL >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
 
+    // Man of the Match
+    let momHtml = '';
+    if (engine) {
+      const sc = engine.getFullScorecard();
+      if (sc.mom) {
+        momHtml = `
+          <div style="margin-top:16px; padding:12px 20px; background:rgba(255,215,0,0.1); border:1px solid rgba(255,215,0,0.3); border-radius:12px; text-align:center;">
+            <div style="font-size:0.68rem; color:#ffd700; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:4px;">🏆 Man of the Match</div>
+            <div style="font-size:1.1rem; font-weight:700; color:#e8eaf6;">${sc.mom.name}</div>
+            <div style="font-size:0.82rem; color:#ffd700; font-family:var(--font-mono); margin-top:2px;">${sc.mom.stats}</div>
+            <div style="font-size:0.68rem; color:#8892b0; margin-top:2px;">${sc.mom.teamName || ''}</div>
+          </div>
+        `;
+      }
+
+      // Both innings summary
+      let inningsSummaryHtml = '';
+      if (sc.innings1) {
+        inningsSummaryHtml += `<div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+          <span style="font-size:0.82rem; color:#8892b0;">${sc.innings1.battingTeamFlag || ''} ${sc.innings1.battingTeamName || 'Team 1'}</span>
+          <span style="font-family:var(--font-mono); font-size:0.92rem; font-weight:700; color:#e8eaf6;">${sc.innings1.runs}/${sc.innings1.wickets} (${sc.innings1.overs})</span>
+        </div>`;
+      }
+      if (sc.innings2) {
+        inningsSummaryHtml += `<div style="display:flex; justify-content:space-between; padding:6px 0;">
+          <span style="font-size:0.82rem; color:#8892b0;">${sc.innings2.battingTeamFlag || ''} ${sc.innings2.battingTeamName || 'Team 2'}</span>
+          <span style="font-family:var(--font-mono); font-size:0.92rem; font-weight:700; color:#e8eaf6;">${sc.innings2.runs}/${sc.innings2.wickets} (${sc.innings2.overs})</span>
+        </div>`;
+      }
+      if (inningsSummaryHtml) {
+        momHtml = `<div style="margin-top:16px; padding:8px 20px; background:rgba(255,255,255,0.04); border-radius:10px; min-width:300px;">${inningsSummaryHtml}</div>` + momHtml;
+      }
+    }
+
     overlay.innerHTML = `
       <h2>${winner ? `${winner.flag} ${winner.name} Win!` : '🏏 Match Tied!'}</h2>
       <div class="result-detail">${result.detail}</div>
+      ${momHtml}
       <div class="final-portfolio">
         <h3>Your Final Portfolio</h3>
         <div class="portfolio-final-value" style="color: ${pnlColor};">
@@ -546,9 +660,109 @@ class GameUI {
           (${portfolioSummary.returnPercent}%)
         </div>
       </div>
-      <button class="btn btn-primary" style="margin-top:24px; padding:14px 48px;" onclick="location.reload()">
-        🔄 Play Again
-      </button>
+      <div style="display:flex; gap:12px; margin-top:24px;">
+        <button class="btn btn-secondary" onclick="app.showScorecard()" style="padding:14px 32px;">📋 Full Scorecard</button>
+        <button class="btn btn-primary" onclick="location.reload()" style="padding:14px 32px;">🔄 Play Again</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+  }
+
+  // ── Full Scorecard Overlay ──
+  showFullScorecard(engine) {
+    const sc = engine.getFullScorecard();
+    const overlay = document.createElement('div');
+    overlay.className = 'innings-break-overlay';
+    overlay.id = 'scorecard-overlay';
+    overlay.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(5,10,30,0.95); z-index:1000; display:flex; align-items:center; justify-content:center; flex-direction:column; overflow-y:auto; padding:20px;';
+
+    const renderInningsTable = (inn, num) => {
+      if (!inn) return '<div style="color:#4a5568; text-align:center; padding:20px;">Innings not played yet</div>';
+
+      const batRows = (inn.batting || []).map(b => `
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+          <td style="padding:6px 10px; font-size:0.8rem; color:#e8eaf6;">${b.name || b.shortName}${!b.isOut && b.balls > 0 ? ' *' : ''}</td>
+          <td style="padding:6px 8px; font-size:0.7rem; color:#8892b0; max-width:120px; overflow:hidden; text-overflow:ellipsis;">${b.isOut === false ? 'not out' : (b.dismissal || 'not out')}</td>
+          <td style="padding:6px 6px; font-family:var(--font-mono); font-weight:700; color:var(--accent-green); text-align:right;">${b.runs}</td>
+          <td style="padding:6px 6px; font-size:0.75rem; color:#8892b0; text-align:right;">${b.balls}</td>
+          <td style="padding:6px 6px; font-size:0.75rem; color:#8892b0; text-align:right;">${b.fours || 0}</td>
+          <td style="padding:6px 6px; font-size:0.75rem; color:#8892b0; text-align:right;">${b.sixes || 0}</td>
+          <td style="padding:6px 6px; font-size:0.75rem; color:#00d4ff; text-align:right;">${b.strikeRate || '-'}</td>
+        </tr>
+      `).join('');
+
+      const bowlRows = (inn.bowling || []).map(b => `
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+          <td style="padding:6px 10px; font-size:0.8rem; color:#e8eaf6;">${b.name || b.shortName}</td>
+          <td style="padding:6px 6px; font-family:var(--font-mono); color:#8892b0; text-align:right;">${b.overs}</td>
+          <td style="padding:6px 6px; color:#8892b0; text-align:right;">${b.maidens}</td>
+          <td style="padding:6px 6px; color:var(--accent-red); text-align:right;">${b.runs}</td>
+          <td style="padding:6px 6px; color:var(--accent-green); font-weight:700; text-align:right;">${b.wickets}</td>
+          <td style="padding:6px 6px; color:#00d4ff; text-align:right;">${b.economy || '-'}</td>
+        </tr>
+      `).join('');
+
+      const fowHtml = (inn.fallOfWickets || []).map(f => `${f.wicketNum}-${f.runs} (${f.batsman}, ${f.overs})`).join(', ');
+
+      return `
+        <div style="margin-bottom:20px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-size:0.85rem; font-weight:600; color:#e8eaf6;">${inn.battingTeamFlag || ''} ${inn.battingTeamName || 'Team'}</span>
+            <span style="font-family:var(--font-mono); font-size:1.1rem; font-weight:700; color:#e8eaf6;">${inn.runs}/${inn.wickets} <span style="font-size:0.8rem; color:#00d4ff;">(${inn.overs})</span></span>
+          </div>
+          <table style="width:100%; border-collapse:collapse;">
+            <thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">
+              <th style="text-align:left; font-size:0.6rem; color:#4a5568; padding:4px 10px;">BATSMAN</th>
+              <th style="text-align:left; font-size:0.6rem; color:#4a5568;"></th>
+              <th style="text-align:right; font-size:0.6rem; color:#4a5568; padding:4px 6px;">R</th>
+              <th style="text-align:right; font-size:0.6rem; color:#4a5568; padding:4px 6px;">B</th>
+              <th style="text-align:right; font-size:0.6rem; color:#4a5568; padding:4px 6px;">4s</th>
+              <th style="text-align:right; font-size:0.6rem; color:#4a5568; padding:4px 6px;">6s</th>
+              <th style="text-align:right; font-size:0.6rem; color:#4a5568; padding:4px 6px;">SR</th>
+            </tr></thead>
+            <tbody>${batRows}</tbody>
+          </table>
+          ${inn.extrasTotal ? `<div style="font-size:0.7rem; color:#8892b0; padding:6px 10px; border-top:1px solid rgba(255,255,255,0.06);">Extras: ${inn.extrasTotal} (w ${inn.extras?.wides||0}, nb ${inn.extras?.noBalls||0}, b ${inn.extras?.byes||0}, lb ${inn.extras?.legByes||0})</div>` : ''}
+          ${bowlRows ? `
+            <div style="margin-top:12px; font-size:0.65rem; text-transform:uppercase; letter-spacing:1px; color:#4a5568; margin-bottom:4px;">Bowling</div>
+            <table style="width:100%; border-collapse:collapse;">
+              <thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">
+                <th style="text-align:left; font-size:0.6rem; color:#4a5568; padding:4px 10px;">BOWLER</th>
+                <th style="text-align:right; font-size:0.6rem; color:#4a5568; padding:4px 6px;">O</th>
+                <th style="text-align:right; font-size:0.6rem; color:#4a5568; padding:4px 6px;">M</th>
+                <th style="text-align:right; font-size:0.6rem; color:#4a5568; padding:4px 6px;">R</th>
+                <th style="text-align:right; font-size:0.6rem; color:#4a5568; padding:4px 6px;">W</th>
+                <th style="text-align:right; font-size:0.6rem; color:#4a5568; padding:4px 6px;">Econ</th>
+              </tr></thead>
+              <tbody>${bowlRows}</tbody>
+            </table>
+          ` : ''}
+          ${fowHtml ? `<div style="font-size:0.65rem; color:#4a5568; padding:6px 10px; margin-top:6px;">FOW: ${fowHtml}</div>` : ''}
+        </div>
+      `;
+    };
+
+    // MoM section
+    let momSection = '';
+    if (sc.mom) {
+      momSection = `<div style="padding:12px 20px; background:rgba(255,215,0,0.08); border:1px solid rgba(255,215,0,0.2); border-radius:10px; text-align:center; margin-top:12px;">
+        <span style="font-size:0.65rem; color:#ffd700; text-transform:uppercase;">🏆 Man of the Match</span>
+        <div style="font-weight:700; color:#e8eaf6; margin-top:2px;">${sc.mom.name} — <span style="color:#ffd700;">${sc.mom.stats}</span></div>
+      </div>`;
+    }
+
+    overlay.innerHTML = `
+      <div style="background:rgba(15,20,50,0.95); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.08); border-radius:20px; padding:28px; max-width:650px; width:100%; max-height:85vh; overflow-y:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+          <h2 style="margin:0; font-size:1.1rem; color:#e8eaf6;">📋 Full Scorecard</h2>
+          <button onclick="app.hideScorecard()" style="background:none; border:none; color:#8892b0; cursor:pointer; font-size:1.2rem;">✕</button>
+        </div>
+        ${renderInningsTable(sc.innings1, 1)}
+        <hr style="border:none; border-top:1px solid rgba(255,255,255,0.08); margin:16px 0;">
+        ${renderInningsTable(sc.innings2, 2)}
+        ${sc.result ? `<div style="text-align:center; padding:12px; font-size:0.85rem; color:var(--accent-green); font-weight:600;">${sc.result.detail}</div>` : ''}
+        ${momSection}
+      </div>
     `;
     document.body.appendChild(overlay);
   }
